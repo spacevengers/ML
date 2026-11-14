@@ -5,6 +5,13 @@ Cross-sensor harmonization for **MODIS** and **VIIRS** active-fire detections, b
 
 Full project spec: [`../../modis_viirs_hotspot_harmonization.md`](../../modis_viirs_hotspot_harmonization.md)
 
+![MODIS vs VIIRS at a glance](assets/modis-vs-viirs.png)
+
+*The same fire through both instruments. VIIRS resolves it at 0.38 km and reports FRP
+4.2 MW; MODIS averages that same burn into a 1.0 km pixel and reports 18.4 MW — neither
+is wrong, they integrate different areas. Confidence shows the same mismatch: `72%`
+versus a bare `N`. This is the problem the project has to solve.*
+
 ---
 
 ## The problem
@@ -70,6 +77,7 @@ Re-running is free — raw API responses are cached in `data/raw/` and reused.
 ML/
 ├── firms_client.py     # FIRMS download + on-disk cache
 ├── build_labels.py     # label table construction
+├── assets/             # README images
 ├── data/               # git-ignored: raw/ cache + labels/
 ├── .env                # git-ignored: FIRMS_KEY
 └── requirements.txt
