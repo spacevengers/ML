@@ -1,0 +1,151 @@
+# TerraWatch — ML
+
+Cross-sensor harmonization for **MODIS** and **VIIRS** active-fire detections, built on
+[NASA FIRMS](https://firms.modaps.eosdis.nasa.gov/).
+
+Full project spec: [`../../modis_viirs_hotspot_harmonization.md`](../../modis_viirs_hotspot_harmonization.md)
+
+---
+
+## The problem
+
+MODIS and VIIRS both detect active fires, but their outputs are not interchangeable:
+
+| | MODIS | VIIRS |
+|---|---|---|
+| Nominal pixel | 1 km | 375 m |
+| Confidence | `0–100` (percent) | `l` / `n` / `h` (categories) |
+| FRP | integral over ~1 km² | integral over ~0.14 km² |
+| Swath width | 2330 km | 3060 km |
+| Overpass (local) | Terra 10:30, Aqua 13:30 | 13:30 / 01:30 |
+
+Combining them naively produces duplicated observations, inconsistent counts, and
+confidence values that look comparable but are not.
+
+**There is no ground-truth "this was a real fire" label available.** So instead of
+training a fire detector, this component trains a model on an *observable* question:
+
+> Given what VIIRS saw in a MODIS-sized footprint, would MODIS have detected fire there?
+
+That single model provides three things the platform needs:
+
+1. **A shared confidence scale** — one calibrated probability for both sensors.
+2. **A matching score** — how likely two detections refer to the same fire.
+3. **An explanation for single-sensor detections** — "MODIS probably wouldn't have
+   caught this at 1 km resolution" vs "MODIS should have, and didn't."
+
+## Status
+
+| Stage | State |
+|---|---|
+| FIRMS ingestion + local cache | ✅ done |
+| Label table (VIIRS-anchored) | ✅ done |
+| Exploratory analysis | ✅ done |
+| Baseline model (logistic regression) | ⬜ not started |
+| Gradient boosting + calibration | ⬜ not started |
+| FRP harmonization | ⬜ not started |
+| Temporal/spatial holdout evaluation | ⬜ not started |
+
+## Quickstart
+
+Requires **Python 3.14** (verified on 3.14.10).
+
+```bash
+cd ML
+python3 -m pip install -r requirements.txt
+
+cp .env.example .env        # then paste your FIRMS key
+# free key: https://firms.modaps.eosdis.nasa.gov/api/map_key/
+
+python3 build_labels.py
+```
+
+Output lands in `data/labels/labels_<start>_<end>.csv`.
+
+Re-running is free — raw API responses are cached in `data/raw/` and reused.
+
+## Layout
+
+```
+ML/
+├── firms_client.py     # FIRMS download + on-disk cache
+├── build_labels.py     # label table construction
+├── data/               # git-ignored: raw/ cache + labels/
+├── .env                # git-ignored: FIRMS_KEY
+└── requirements.txt
+```
+
+## The label table
+
+One row per **VIIRS** detection (VIIRS detects ~5× more than MODIS, so anchoring on it
+yields both classes automatically).
+
+- **Label** `modis_detected` — 1 if any MODIS detection falls within **1.5 km** and
+  **±30 min**, else 0.
+- **Own-pixel features** — `frp`, `bright_ti4`, `bright_ti5`, `scan`, `track`,
+  `conf_ord`, `is_night`, `doy`.
+- **Footprint features** — `n_neigh`, `frp_sum`, `frp_max`, `ti4_mean`,
+  `overpass_spread_min`: the aggregate of VIIRS pixels sharing the same 1.5 km
+  footprint within ±5 min. This is the nesting encoded as numbers.
+
+The footprint aggregate matters because MODIS's FRP is an integral over ~7 VIIRS
+pixels. Summing VIIRS inside the MODIS footprint gives a median ratio of
+**1.05** against MODIS FRP on matched pairs — the two sensors agree almost exactly
+once you compare the same physical quantity.
+
+## Findings so far
+
+Kenya, **2023-02-10 → 2023-02-14** (5 days): 355 MODIS detections, 1,933 VIIRS.
+
+**Signal exists.** Base rate 11.2%. Single-feature predictive power:
+
+| feature | ROC-AUC | PR-AUC |
+|---|---|---|
+| `frp_sum` (footprint) | 0.786 | 0.409 |
+| `frp_max` (footprint) | 0.780 | 0.449 |
+| `n_neigh` | 0.754 | 0.353 |
+| `bright_ti4` | 0.699 | 0.221 |
+| `frp` (own pixel only) | 0.692 | 0.240 |
+| `conf_ord` | 0.510 | 0.131 |
+
+The footprint aggregate beats the single pixel (0.786 vs 0.692), independently
+confirming the nesting hypothesis.
+
+**VIIRS confidence is nearly uninformative** (AUC 0.510 ≈ coin flip). Harmonized
+confidence cannot be a rescaling of `l`/`n`/`h` — it has to be learned.
+
+**Accuracy is a trap.** 88.8% of rows are negative, so predicting "no fire" always
+scores 88.8% accuracy. Report **PR-AUC** (floor = 0.112), not accuracy.
+
+**Terra is unusable for tight matching** at ±30 min:
+
+| MODIS satellite | matched |
+|---|---|
+| Aqua | 47.0% |
+| Terra | 0.0% |
+
+Terra passes ~3 hours before VIIRS S-NPP, so no Terra detection has a VIIRS partner
+within 30 minutes. Tight temporal matching only exists for **Aqua ↔ VIIRS**.
+
+## Known limitations
+
+- **Swath-edge coverage bias.** MODIS's swath (2330 km) is narrower than VIIRS's
+  (3060 km), so VIIRS detections near its own swath edge are often outside MODIS
+  coverage entirely. Positive rate collapses from **23.9% (near-nadir) to 2.2%
+  (high scan)**. Left unfiltered, the model learns satellite geometry instead of fire
+  behaviour. `MAX_SCAN_KM` in `build_labels.py` is a first-order mitigation; the
+  correct fix requires per-granule swath geometry.
+- **Absence is ambiguous.** A missing MODIS detection may mean cloud, swath gap, or a
+  fire too small for 1 km — not "no fire."
+- **Sample size.** 5 days of one region is exploratory, not a training set.
+- **Internal consistency only.** Agreement between two sensors does not prove
+  improved real-world fire detection accuracy.
+
+## Roadmap
+
+1. Backfill 2–3 fire seasons (≈220 API calls per source).
+2. Logistic regression baseline → LightGBM with monotonic constraints.
+3. Isotonic calibration; reliability diagram.
+4. Evaluate with **spatial blocks** and **held-out seasons**, never a random split.
+5. FRP harmonization: regress MODIS FRP on summed VIIRS FRP + geometry.
+6. Export a versioned artifact (`joblib`) with a documented input/output contract.

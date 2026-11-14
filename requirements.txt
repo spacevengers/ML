@@ -1,0 +1,12 @@
+# Machine-learning / data pipeline environment.
+# Verified on macOS with Python 3.14.10 (python.org build).
+#
+#   python3 -m pip install -r requirements.txt
+
+numpy==2.5.4
+pandas==3.1.1
+scipy==1.18.0
+scikit-learn==1.9.0
+lightgbm==4.7.0
+matplotlib==3.11.2
+python-dotenv==1.2.4

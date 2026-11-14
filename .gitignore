@@ -1,0 +1,14 @@
+# Secrets
+.env
+
+# Generated / cached data (reproducible from the FIRMS API)
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# macOS
+.DS_Store
