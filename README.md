@@ -51,6 +51,8 @@ That single model provides three things the platform needs:
 | Baseline model (logistic regression) | ✅ done |
 | Gradient boosting + monotonic constraints | ✅ done |
 | Honest evaluation (spatial grouped CV) | ✅ done |
+| Versioned model artifacts | ✅ done |
+| Batch prediction + backend import | ✅ done |
 | Temporal hold-out | ⬜ blocked on more data |
 | Probability calibration | ⬜ not started |
 | FRP harmonization | ⬜ not started |
@@ -80,6 +82,12 @@ or one stage at a time:
 python3 -m terrawatch fetch  --start 2023-02-10 --end 2023-02-15
 python3 -m terrawatch labels --start 2023-02-10 --end 2023-02-15
 python3 -m terrawatch train  --start 2023-02-10 --end 2023-02-15
+
+# score a saved bundle
+python3 -m terrawatch predict --bundle bundle.json
+
+# or fetch a completed run from the Go backend, score it, and import it
+python3 -m terrawatch predict-backend --api http://localhost:8000 --import
 ```
 
 `--end` is **exclusive**, matching Python slicing. The example above covers 10–14 Feb.
@@ -88,7 +96,7 @@ Outputs land in `data/raw/` (Parquet cache), `data/labels/`, and `data/models/`.
 Re-running is free — cached chunks are reused, never re-downloaded.
 
 ```bash
-python3 -m pytest      # 21 tests, no network required
+python3 -m pytest      # 25 tests, no network required
 ```
 
 ## Wiki
@@ -123,10 +131,13 @@ ML/
 │   ├── ingest.py      # parallel, chunked, Parquet-cached FIRMS client
 │   ├── geo.py         # great-circle distance, SpatialTimeIndex, grid blocks
 │   ├── timeutils.py   # FIRMS HHMM -> comparable minutes
-│   ├── labels.py      # label table (pure functions, no I/O)
+│   ├── labels.py      # label table + shared serving features (pure functions)
 │   ├── features.py    # feature sets + monotonic constraints
 │   ├── models.py      # model registry
 │   ├── evaluate.py    # metrics, splits, grouped CV, leak checks
+│   ├── artifacts.py   # versioned joblib artifacts + metadata
+│   ├── predict.py     # bundle scoring + cluster aggregation
+│   ├── backend_api.py # fetch a run from the Go API / import predictions
 │   └── cli.py         # python -m terrawatch
 ├── tests/             # pytest suite
 ├── wiki/              # single-page write-up (serve from ML/)
@@ -174,6 +185,68 @@ The footprint aggregate matters because MODIS's FRP is an integral over ~7 VIIRS
 pixels. Summing VIIRS inside the MODIS footprint gives a median ratio of
 **1.05** against MODIS FRP on matched pairs — the two sensors agree almost exactly
 once you compare the same physical quantity.
+
+## Serving and backend integration
+
+Training now writes a versioned artifact to `data/models/`:
+
+```text
+lightgbm-2026-11-15.joblib   # fitted estimator
+lightgbm-2026-11-15.json     # feature order, settings, training metadata, metrics
+```
+
+Serving uses the same `build_viirs_features` function as training. The caller
+must pass **all VIIRS observations in the run's date range and bounding box**,
+not only cluster members, because the footprint features (`n_neigh`, `frp_sum`,
+`frp_max`, `ti4_mean`, `overpass_spread_min`) are computed from neighbours.
+
+The bundle contract is:
+
+```json
+{
+  "run_id": 1,
+  "run_uid": "...",
+  "clusters": [
+    {"cluster_uid": "...", "members": [{"observation_id": 101, "role": "viirs"}]}
+  ],
+  "observations": [
+    {
+      "observation_id": 101,
+      "sensor": "VIIRS",
+      "satellite": "Suomi NPP",
+      "acquired_at": "2024-01-01T10:32:00Z",
+      "latitude": -1.29,
+      "longitude": 36.82,
+      "frp": 4.2,
+      "brightness": 320.1,
+      "brightness_aux": 290.4,
+      "scan": 0.4,
+      "track": 0.4,
+      "confidence_class": "nominal",
+      "daynight": "N"
+    }
+  ]
+}
+```
+
+`predict` scores every VIIRS member and aggregates to one probability per
+cluster. The default aggregation is `max`; `mean` is also available. Clusters
+with no VIIRS member are skipped. `frp_calibrated` is not emitted because the
+current model does not predict FRP.
+
+Fetch a completed backend run, score it, and import the result:
+
+```bash
+python3 -m terrawatch predict-backend \
+  --api http://localhost:8000 \
+  --run-id 1 \
+  --import
+```
+
+The backend must have a completed harmonization run and a model artifact must
+exist in `data/models/`. The import is all-or-nothing and keyed by
+`cluster_uid`, so run harmonization with the same rule used in training
+(1.5 km / 30 min).
 
 ## Findings so far
 
@@ -278,5 +351,7 @@ geometry confounder, not from a bigger model.
 2. Isotonic calibration; reliability diagram (the probability *is* the deliverable).
 3. Confounder control: restrict anchors to regions MODIS actually imaged.
 4. FRP harmonization: regress MODIS FRP on summed VIIRS FRP + geometry.
-5. Export a versioned artifact (`joblib`) with a documented input/output contract.
-6. Serve as a batch job the backend calls after ingestion.
+5. ~~Export a versioned artifact (`joblib`) with a documented input/output contract.~~ ✅
+6. ~~Serve as a batch job the backend calls after ingestion.~~ ✅ `predict-backend`
+7. Replace the demo's placeholder prediction importer with `predict-backend --import`.
+8. Retrain on all VIIRS platforms (S-NPP, NOAA-20, NOAA-21), not only S-NPP.
