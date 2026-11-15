@@ -18,7 +18,9 @@ RUN python3 -m pip install -r requirements.txt
 
 COPY . .
 
-# The default command is the offline test suite. Override it for training or
-# prediction, e.g.:
+# Default: the remote harmonizer HTTP service. Override for tests, training,
+# or batch prediction:
+#   docker compose run --rm ml python3 -m pytest -q
 #   docker compose run --rm ml python3 -m terrawatch all --start ... --end ...
-CMD ["python3", "-m", "pytest", "-q"]
+EXPOSE 9000
+CMD ["python3", "-m", "terrawatch", "serve", "--host", "0.0.0.0", "--port", "9000"]

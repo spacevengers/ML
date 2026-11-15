@@ -53,6 +53,7 @@ That single model provides three things the platform needs:
 | Honest evaluation (spatial grouped CV) | ✅ done |
 | Versioned model artifacts | ✅ done |
 | Batch prediction + backend import | ✅ done |
+| Remote HTTP harmonizer service | ✅ done |
 | Temporal hold-out | ⬜ blocked on more data |
 | Probability calibration | ⬜ not started |
 | FRP harmonization | ⬜ not started |
@@ -88,6 +89,9 @@ python3 -m terrawatch predict --bundle bundle.json
 
 # or fetch a completed run from the Go backend, score it, and import it
 python3 -m terrawatch predict-backend --api http://localhost:8000 --import
+
+# run the remote harmonizer service for the Go backend
+python3 -m terrawatch serve --host 0.0.0.0 --port 9000
 ```
 
 `--end` is **exclusive**, matching Python slicing. The example above covers 10–14 Feb.
@@ -96,7 +100,7 @@ Outputs land in `data/raw/` (Parquet cache), `data/labels/`, and `data/models/`.
 Re-running is free — cached chunks are reused, never re-downloaded.
 
 ```bash
-python3 -m pytest      # 25 tests, no network required
+python3 -m pytest      # 27 tests, no network required
 ```
 
 ## Wiki
@@ -138,6 +142,7 @@ ML/
 │   ├── artifacts.py   # versioned joblib artifacts + metadata
 │   ├── predict.py     # bundle scoring + cluster aggregation
 │   ├── backend_api.py # fetch a run from the Go API / import predictions
+│   ├── service.py     # remote HTTP harmonizer service
 │   └── cli.py         # python -m terrawatch
 ├── tests/             # pytest suite
 ├── wiki/              # single-page write-up (serve from ML/)
@@ -248,6 +253,47 @@ exist in `data/models/`. The import is all-or-nothing and keyed by
 `cluster_uid`, so run harmonization with the same rule used in training
 (1.5 km / 30 min).
 
+### Remote HTTP harmonizer
+
+Start the service with the newest artifact:
+
+```bash
+python3 -m terrawatch serve --host 0.0.0.0 --port 9000
+```
+
+Endpoints:
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/health` | model version and readiness |
+| `POST` | `/harmonize` | backend remote-harmonizer contract |
+
+The service implements the existing request/response contract in
+`backend/internal/harmonize/contract.go`:
+
+```text
+backend → POST /harmonize → clusters + matches + metrics + p_modis_detect
+```
+
+Backend configuration:
+
+```bash
+HARMONIZER_METHOD=remote
+HARMONIZER_ENDPOINT=http://ml-service:9000/harmonize
+HARMONIZER_TIMEOUT_SECONDS=300
+```
+
+**Required backend change for full feature quality:** the current `Observation`
+contract omits `brightness`, `brightness_aux`, `scan`, `track`, `daynight`, and
+`fire_type`. Add these fields to `internal/harmonize/contract.go` and map them in
+`toContract` in `internal/harmonize/service.go`. The service still responds
+without them, but the model receives missing feature values and scores are
+degraded.
+
+The service re-clusters observations with the baseline rule (one MODIS anchor,
+nearest VIIRS within distance/time), scores every VIIRS member, and returns
+`p_modis_detect` per cluster. `frp_calibrated` remains unset.
+
 ## Findings so far
 
 Kenya, **2023-02-10 → 2023-02-14** (5 days): 355 MODIS detections, 1,933 VIIRS.
@@ -353,5 +399,6 @@ geometry confounder, not from a bigger model.
 4. FRP harmonization: regress MODIS FRP on summed VIIRS FRP + geometry.
 5. ~~Export a versioned artifact (`joblib`) with a documented input/output contract.~~ ✅
 6. ~~Serve as a batch job the backend calls after ingestion.~~ ✅ `predict-backend`
-7. Replace the demo's placeholder prediction importer with `predict-backend --import`.
+7. ~~Provide a remote HTTP harmonizer service.~~ ✅ `terrawatch serve`
 8. Retrain on all VIIRS platforms (S-NPP, NOAA-20, NOAA-21), not only S-NPP.
+9. Add calibration before treating `p_modis_detect` as a probability.

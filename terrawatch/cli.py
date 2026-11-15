@@ -21,6 +21,7 @@ from .ingest import FirmsClient
 from .labels import build_label_table, labels_path, save_labels
 from .models import build_model
 from .predict import AGGREGATIONS, predict_bundle, read_bundle, write_predictions
+from .service import run_server
 
 
 # --------------------------------------------------------------------------- #
@@ -219,6 +220,17 @@ def cmd_predict_backend(args) -> None:
         print(json.dumps(response, indent=2))
 
 
+def cmd_serve(args) -> None:
+    model_path = _model_path(args)
+    artifact = load_artifact(model_path)
+    run_server(
+        artifact,
+        host=args.host,
+        port=args.port,
+        verbose=args.verbose,
+    )
+
+
 def cmd_all(args) -> None:
     cmd_fetch(args)
     print()
@@ -287,6 +299,17 @@ def build_parser() -> argparse.ArgumentParser:
     backend.add_argument("--admin-token", default=None,
                          help="default: ADMIN_TOKEN environment variable")
     backend.set_defaults(func=cmd_predict_backend)
+
+    service = sub.add_parser(
+        "serve",
+        help="run the remote harmonizer HTTP service",
+    )
+    service.add_argument("--model", default=None,
+                         help="artifact path (default: newest in data/models)")
+    service.add_argument("--host", default="0.0.0.0")
+    service.add_argument("--port", type=int, default=9000)
+    service.add_argument("--verbose", action="store_true")
+    service.set_defaults(func=cmd_serve)
 
     return parser
 
