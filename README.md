@@ -65,26 +65,73 @@ python3 -m pip install -r requirements.txt
 
 cp .env.example .env        # then paste your FIRMS key
 # free key: https://firms.modaps.eosdis.nasa.gov/api/map_key/
-
-python3 build_labels.py
 ```
 
-Output lands in `data/labels/labels_<start>_<end>.csv`.
+Everything runs through one entrypoint:
 
-Re-running is free — raw API responses are cached in `data/raw/` and reused.
+```bash
+# fetch -> labels -> train in one go
+python3 -m terrawatch all --start 2023-02-10 --end 2023-02-15
+```
+
+or one stage at a time:
+
+```bash
+python3 -m terrawatch fetch  --start 2023-02-10 --end 2023-02-15
+python3 -m terrawatch labels --start 2023-02-10 --end 2023-02-15
+python3 -m terrawatch train  --start 2023-02-10 --end 2023-02-15
+```
+
+`--end` is **exclusive**, matching Python slicing. The example above covers 10–14 Feb.
+
+Outputs land in `data/raw/` (Parquet cache), `data/labels/`, and `data/models/`.
+Re-running is free — cached chunks are reused, never re-downloaded.
+
+```bash
+python3 -m pytest      # 21 tests, no network required
+```
 
 ## Layout
 
 ```
 ML/
-├── firms_client.py     # FIRMS download + on-disk cache
-├── build_labels.py     # label table construction
-├── train.py            # models + honest evaluation
-├── assets/             # README images
-├── data/               # git-ignored: raw/ cache + labels/
-├── .env                # git-ignored: FIRMS_KEY
+├── terrawatch/
+│   ├── config.py      # Settings: bbox, thresholds, paths, .env
+│   ├── ingest.py      # parallel, chunked, Parquet-cached FIRMS client
+│   ├── geo.py         # great-circle distance, SpatialTimeIndex, grid blocks
+│   ├── timeutils.py   # FIRMS HHMM -> comparable minutes
+│   ├── labels.py      # label table (pure functions, no I/O)
+│   ├── features.py    # feature sets + monotonic constraints
+│   ├── models.py      # model registry
+│   ├── evaluate.py    # metrics, splits, grouped CV, leak checks
+│   └── cli.py         # python -m terrawatch
+├── tests/             # pytest suite
+├── assets/            # README images
+├── data/              # git-ignored: raw/ cache, labels/, models/
+├── .env               # git-ignored: FIRMS_KEY
 └── requirements.txt
 ```
+
+### Extending it
+
+The point of the split is that scaling touches one file, not five:
+
+| To add… | Edit |
+|---|---|
+| a model | `build_model` in `models.py` |
+| a feature set | `FEATURE_SETS` in `features.py` — appears in `--feature-set` and the ablation table automatically |
+| a data source | `Settings.sources` in `config.py` |
+| a threshold or study area | `Settings` in `config.py`, or pass `--bbox` / `--max-scan` |
+| a new pipeline stage | one command function in `cli.py` |
+
+Scaling characteristics:
+
+- **Download** is parallel (`ThreadPoolExecutor`) and chunked at the API's 5-day
+  maximum, so multi-year backfills are bounded in memory.
+- **Storage** is Parquet — roughly 5× smaller and faster to re-read than the raw CSVs.
+- **Labelling** is a pure function over DataFrames, so it is unit-testable without
+  network access and reusable from a notebook or the backend.
+- **Evaluation** is parameterised by feature set, so comparisons are one CLI flag.
 
 ## The label table
 
@@ -193,7 +240,7 @@ geometry confounder, not from a bigger model.
   (3060 km), so VIIRS detections near its own swath edge are often outside MODIS
   coverage entirely. Positive rate collapses from **23.9% (near-nadir) to 2.2%
   (high scan)**. Left unfiltered, the model learns satellite geometry instead of fire
-  behaviour. `MAX_SCAN_KM` in `build_labels.py` is a first-order mitigation; the
+  behaviour. `Settings.max_scan_km` (`--max-scan`) is a first-order mitigation; the
   correct fix requires per-granule swath geometry.
 - **Absence is ambiguous.** A missing MODIS detection may mean cloud, swath gap, or a
   fire too small for 1 km — not "no fire."
@@ -203,9 +250,9 @@ geometry confounder, not from a bigger model.
 
 ## Roadmap
 
-1. Backfill 2–3 fire seasons (≈220 API calls per source).
-2. Logistic regression baseline → LightGBM with monotonic constraints.
-3. Isotonic calibration; reliability diagram.
-4. Evaluate with **spatial blocks** and **held-out seasons**, never a random split.
-5. FRP harmonization: regress MODIS FRP on summed VIIRS FRP + geometry.
-6. Export a versioned artifact (`joblib`) with a documented input/output contract.
+1. Backfill 2–3 fire seasons (≈220 API calls per source) to unlock a temporal hold-out.
+2. Isotonic calibration; reliability diagram (the probability *is* the deliverable).
+3. Confounder control: restrict anchors to regions MODIS actually imaged.
+4. FRP harmonization: regress MODIS FRP on summed VIIRS FRP + geometry.
+5. Export a versioned artifact (`joblib`) with a documented input/output contract.
+6. Serve as a batch job the backend calls after ingestion.
