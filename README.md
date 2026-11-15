@@ -48,10 +48,12 @@ That single model provides three things the platform needs:
 | FIRMS ingestion + local cache | ✅ done |
 | Label table (VIIRS-anchored) | ✅ done |
 | Exploratory analysis | ✅ done |
-| Baseline model (logistic regression) | ⬜ not started |
-| Gradient boosting + calibration | ⬜ not started |
+| Baseline model (logistic regression) | ✅ done |
+| Gradient boosting + monotonic constraints | ✅ done |
+| Honest evaluation (spatial grouped CV) | ✅ done |
+| Temporal hold-out | ⬜ blocked on more data |
+| Probability calibration | ⬜ not started |
 | FRP harmonization | ⬜ not started |
-| Temporal/spatial holdout evaluation | ⬜ not started |
 
 ## Quickstart
 
@@ -77,6 +79,7 @@ Re-running is free — raw API responses are cached in `data/raw/` and reused.
 ML/
 ├── firms_client.py     # FIRMS download + on-disk cache
 ├── build_labels.py     # label table construction
+├── train.py            # models + honest evaluation
 ├── assets/             # README images
 ├── data/               # git-ignored: raw/ cache + labels/
 ├── .env                # git-ignored: FIRMS_KEY
@@ -134,6 +137,55 @@ scores 88.8% accuracy. Report **PR-AUC** (floor = 0.112), not accuracy.
 
 Terra passes ~3 hours before VIIRS S-NPP, so no Terra detection has a VIIRS partner
 within 30 minutes. Tight temporal matching only exists for **Aqua ↔ VIIRS**.
+
+## Training results
+
+1,933 rows, 217 positives (11.2%), grouped 5-fold CV over 57 spatial cells.
+
+### The same model, evaluated two ways
+
+| split | model | PR-AUC | ROC-AUC | Brier |
+|---|---|---|---|---|
+| random (optimistic) | logistic | 0.578 | 0.812 | 0.071 |
+| random (optimistic) | lightgbm | **0.825** | 0.952 | 0.041 |
+| grouped CV (honest) | logistic | 0.419 | 0.735 | 0.085 |
+| grouped CV (honest) | lightgbm | 0.479 | 0.793 | 0.081 |
+| grouped CV (baseline) | dummy | 0.110 | 0.500 | 0.101 |
+
+Random splitting inflates LightGBM's PR-AUC by **+0.346** (~72% relative). The
+0.825 figure is memorisation: neighbouring pixels of the same fire land on both
+sides of the split.
+
+### Feature ablation (grouped CV, LightGBM)
+
+| feature set | PR-AUC |
+|---|---|
+| physics only | **0.486** |
+| physics + night | 0.472 |
+| physics + geometry + night | 0.479 |
+| physics + geometry + night + `doy` | 0.561 |
+
+The jump to 0.561 comes entirely from `doy` (day-of-year). With only 5 days it is
+effectively a date ID, and the folds hold out **space but not time** — so it leaks.
+The honest figure is **~0.48**.
+
+### What the model actually leans on
+
+LightGBM split counts: `scan` 558, `track` 505, `log_frp_max` 152, `n_neigh` 144,
+…, `conf_ord` **0**.
+
+- The top two features are **viewing geometry**, not fire physics — consistent with
+  the swath-edge confounder above.
+- The model **never splits on confidence at all**, corroborating the AUC-0.510
+  result: VIIRS confidence carries no cross-sensor information.
+
+### Takeaway
+
+Physics features alone (`frp_max`, `n_neigh`, brightness) reach PR-AUC **~0.48** on
+honest spatial hold-out, roughly 4× the 0.112 base rate. That is a real but modest
+signal on a 5-day sample — enough to justify the approach, not enough to quote as a
+final number. The next meaningful gain comes from more data and removing the
+geometry confounder, not from a bigger model.
 
 ## Known limitations
 
