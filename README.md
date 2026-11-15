@@ -91,6 +91,29 @@ Re-running is free — cached chunks are reused, never re-downloaded.
 python3 -m pytest      # 21 tests, no network required
 ```
 
+## Wiki
+
+A single-page write-up of the process, decisions, data, and results lives at
+[`wiki/index.html`](wiki/index.html) — self-contained, no build step.
+
+Serve it from the `ML/` directory so the `../assets/` image resolves:
+
+```bash
+cd ML
+python3 -m http.server 8765 --bind 127.0.0.1
+```
+
+Then open **<http://127.0.0.1:8765/wiki/>**.
+
+Stop the server with `Ctrl-C`, or if it was backgrounded:
+
+```bash
+lsof -ti tcp:8765 | xargs kill
+```
+
+The page also opens directly by double-clicking `wiki/index.html`; only the
+`../assets/` image needs the server.
+
 ## Layout
 
 ```
@@ -106,7 +129,8 @@ ML/
 │   ├── evaluate.py    # metrics, splits, grouped CV, leak checks
 │   └── cli.py         # python -m terrawatch
 ├── tests/             # pytest suite
-├── assets/            # README images
+├── wiki/              # single-page write-up (serve from ML/)
+├── assets/            # README + wiki images
 ├── data/              # git-ignored: raw/ cache, labels/, models/
 ├── .env               # git-ignored: FIRMS_KEY
 └── requirements.txt

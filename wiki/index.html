@@ -1,0 +1,980 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TerraWatch · ML — Harmonizing MODIS and VIIRS</title>
+<meta name="description" content="How two satellite fire products were made comparable, what the data actually looks like, and the three ways it tried to fool us.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%238a3a2f'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300..600;1,6..72,300..500&family=Public+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ground: #eff1ea;
+    --surface: #fbfcf7;
+    --surface-2: #f5f7ef;
+    --ink: #151a18;
+    --body: #333c37;
+    --muted: #5f6b64;
+    --faint: #7c877f;
+    --rule: #dfe3d7;
+    --rule-soft: #e6e9df;
+    --accent: #8a3a2f;
+    --accent-dark: #6f2c23;
+    --wash: #e6d7d2;
+    --warn: #7f5c12;
+    --ok: #4f6049;
+    --sans: "Public Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --serif: "Newsreader", Georgia, "Times New Roman", serif;
+    --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --col: 760px;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--body);
+    font: 400 16px/1.62 var(--sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; text-underline-offset: 3px; }
+
+  /* ---------------- top bar ---------------- */
+  .topbar {
+    position: sticky; top: 0; z-index: 50;
+    display: flex; align-items: center; gap: 14px;
+    height: 56px; padding: 0 26px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--rule);
+  }
+  .mark { width: 11px; height: 11px; background: var(--accent); flex: none; }
+  .wordmark {
+    font: 500 21px/1 var(--serif); letter-spacing: -.01em; color: var(--ink);
+    display: flex; align-items: baseline; gap: 12px;
+  }
+  .wordmark .sep { color: var(--rule); font-weight: 300; }
+  .wordmark .sub { font: 400 15px/1 var(--sans); color: var(--muted); }
+  .topbar .spacer { flex: 1; }
+
+  .searchbox {
+    display: flex; align-items: center; gap: 8px;
+    height: 34px; padding: 0 10px; width: 190px;
+    background: var(--surface); border: 1px solid var(--rule); border-radius: 8px;
+  }
+  .searchbox svg { flex: none; opacity: .5; }
+  .searchbox input {
+    border: 0; outline: 0; background: transparent; width: 100%;
+    font: 400 13.5px/1 var(--sans); color: var(--ink);
+  }
+  .searchbox input::placeholder { color: var(--faint); }
+  .kbd {
+    font: 500 11px/1 var(--mono); color: var(--muted);
+    border: 1px solid var(--rule); border-radius: 4px; padding: 3px 5px; flex: none;
+  }
+  .btn {
+    display: inline-flex; align-items: center; gap: 7px;
+    height: 34px; padding: 0 12px; cursor: pointer;
+    background: var(--surface); border: 1px solid var(--rule); border-radius: 8px;
+    font: 500 13.5px/1 var(--sans); color: var(--ink);
+  }
+  .btn:hover { background: var(--surface-2); }
+
+  /* ---------------- page grid ---------------- */
+  .page {
+    display: grid;
+    grid-template-columns: 252px minmax(0, 1fr) 196px;
+    gap: 46px;
+    max-width: 1320px;
+    margin: 0 auto;
+    padding: 38px 28px 120px;
+    align-items: start;
+  }
+
+  /* ---------------- left nav ---------------- */
+  .nav { position: sticky; top: 82px; }
+  .nav .group {
+    font: 600 12px/1 var(--sans); color: var(--muted);
+    letter-spacing: .02em; margin: 26px 0 10px 15px;
+  }
+  .nav .group:first-child { margin-top: 0; }
+  .nav a {
+    display: block; position: relative;
+    padding: 7px 8px 7px 15px; margin: 1px 0;
+    font: 400 14px/1.45 var(--sans); color: var(--body);
+  }
+  .nav a:hover { color: var(--ink); text-decoration: none; }
+  .nav a.active { color: var(--ink); font-weight: 500; }
+  .nav a.active::before {
+    content: ""; position: absolute; left: 0; top: 8px; bottom: 8px;
+    width: 2px; background: var(--accent);
+  }
+  .nav .foot {
+    margin: 32px 0 0 15px; padding-top: 16px;
+    border-top: 1px solid var(--rule);
+    font: 400 12.5px/1.55 var(--sans); color: var(--faint);
+  }
+
+  /* ---------------- TOC ---------------- */
+  .toc { position: sticky; top: 82px; }
+  .toc .label {
+    font: 600 12px/1 var(--sans); color: var(--muted); margin-bottom: 12px;
+  }
+  .toc a {
+    display: block; position: relative;
+    padding: 5px 0 5px 13px; font: 400 13px/1.45 var(--sans); color: var(--muted);
+  }
+  .toc a:hover { color: var(--ink); text-decoration: none; }
+  .toc a.active { color: var(--ink); }
+  .toc a.active::before {
+    content: ""; position: absolute; left: 0; top: 6px; bottom: 6px;
+    width: 2px; background: var(--accent);
+  }
+
+  /* ---------------- prose ---------------- */
+  main { max-width: var(--col); min-width: 0; }
+  .crumb {
+    font: 500 11.5px/1 var(--mono); letter-spacing: .06em; text-transform: uppercase;
+    color: var(--faint); margin-bottom: 18px;
+  }
+  h1 {
+    font: 400 45px/1.14 var(--serif); letter-spacing: -.015em;
+    color: var(--ink); margin: 0 0 18px;
+  }
+  .lede {
+    font: 400 17px/1.62 var(--sans); color: var(--body);
+    margin: 0 0 34px; max-width: 64ch;
+  }
+  section { padding-top: 8px; margin-bottom: 62px; scroll-margin-top: 80px; }
+  h2 {
+    font: 500 24px/1.3 var(--serif); letter-spacing: -.01em;
+    color: var(--ink); margin: 0 0 6px;
+  }
+  h2 + .sub { margin: 0 0 22px; color: var(--muted); font-size: 15px; }
+  h3 {
+    font: 600 15.5px/1.45 var(--sans); color: var(--ink);
+    margin: 30px 0 8px;
+  }
+  p { margin: 0 0 15px; }
+  strong { font-weight: 600; color: var(--ink); }
+  em { font-style: italic; }
+  code {
+    font: 400 .87em/1.35 var(--mono); background: #eceee4;
+    border-radius: 3px; padding: 1px 4px;
+    color: var(--accent-dark);
+    box-decoration-break: clone;
+    -webkit-box-decoration-break: clone;
+  }
+  ul, ol { margin: 0 0 15px; padding-left: 22px; }
+  li { margin: 5px 0; }
+
+  /* ---------------- fact grid ---------------- */
+  .facts {
+    display: grid; grid-template-columns: 1fr 1fr;
+    margin: 0 0 12px;
+  }
+  .fact { padding: 14px 0 16px; border-top: 1px solid var(--rule); }
+  .fact:nth-child(odd) { padding-right: 24px; }
+  .fact:nth-child(even) { padding-left: 24px; border-left: 1px solid var(--rule); }
+  .fact .k {
+    font: 500 11.5px/1 var(--mono); letter-spacing: .05em; text-transform: uppercase;
+    color: var(--faint); margin-bottom: 7px;
+  }
+  .fact .v { font: 400 15.5px/1.4 var(--sans); color: var(--ink); }
+
+  /* ---------------- cards ---------------- */
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 12px;
+    padding: 22px 26px;
+    margin: 20px 0;
+  }
+  .panel.tint { background: var(--surface-2); border-color: transparent; }
+  .panel.note { background: #f7f9f1; border-color: #e0e6d3; }
+
+  .kicker {
+    font: 500 11.5px/1 var(--mono); letter-spacing: .06em; text-transform: uppercase;
+    color: var(--accent); margin-bottom: 10px;
+  }
+
+  /* ---------------- steps ---------------- */
+  .steps { list-style: none; margin: 22px 0; padding: 0; }
+  .steps li {
+    position: relative; margin: 0; padding: 0 0 26px 46px;
+  }
+  .steps li:last-child { padding-bottom: 4px; }
+  .steps li::before {
+    content: ""; position: absolute; left: 13px; top: 24px; bottom: 0; width: 1px;
+    background: var(--rule);
+  }
+  .steps li:last-child::before { display: none; }
+  .steps .n {
+    position: absolute; left: 0; top: 0;
+    font: 500 12px/1 var(--mono); color: var(--accent);
+    background: var(--surface); padding: 4px 0;
+  }
+  .steps .t { font: 600 15px/1.5 var(--sans); color: var(--ink); }
+  .steps .d { font-size: 14.5px; color: var(--body); margin-top: 2px; }
+  .steps .wait {
+    font: 400 12.5px/1.6 var(--mono); color: var(--faint); margin-top: 6px;
+  }
+
+  /* ---------------- tables ---------------- */
+  .tw { overflow-x: auto; margin: 18px 0 10px; }
+  table { width: 100%; border-collapse: collapse; font-size: 14.5px; }
+  th {
+    text-align: left; font: 500 11px/1.3 var(--mono); letter-spacing: .05em;
+    text-transform: uppercase; color: var(--faint);
+    padding: 0 12px 9px 0; border-bottom: 1px solid var(--rule);
+    white-space: nowrap;
+  }
+  td {
+    padding: 11px 12px 11px 0; border-bottom: 1px solid var(--rule-soft);
+    vertical-align: top;
+  }
+  tr:last-child td { border-bottom: 0; }
+  .num { text-align: right; font-family: var(--mono); font-size: 13px; padding-right: 16px; }
+  th.num { text-align: right; padding-right: 16px; }
+  td.num:last-child, th.num:last-child { padding-right: 0; }
+  .hi { color: var(--ok); font-weight: 600; }
+  .lo { color: var(--accent); }
+  .dim { color: var(--faint); }
+
+  /* ---------------- bars ---------------- */
+  .bars { margin: 18px 0 6px; }
+  .row { display: grid; grid-template-columns: 118px 1fr 42px; gap: 12px; align-items: center; margin: 7px 0; }
+  .row .l { font: 400 12.5px/1.3 var(--mono); color: var(--body); text-align: right; }
+  .track { height: 14px; background: var(--rule-soft); border-radius: 3px; overflow: hidden; }
+  .fill { height: 100%; background: linear-gradient(90deg, #8a3a2f, #bd5a44); border-radius: 3px; }
+  .fill.geo { background: linear-gradient(90deg, #7c8879, #a9b4a5); }
+  .fill.none { background: #cfd4c8; }
+  .row .v { font: 500 12px/1 var(--mono); color: var(--muted); }
+  .legend {
+    display: flex; flex-wrap: wrap; gap: 20px; margin-top: 14px;
+    font-size: 12.5px; color: var(--muted);
+  }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; }
+  .legend .sw { width: 11px; height: 11px; border-radius: 2px; flex: none; }
+  .legend .sw.physics { background: linear-gradient(90deg, #8a3a2f, #bd5a44); }
+  .legend .sw.geo { background: linear-gradient(90deg, #7c8879, #a9b4a5); }
+  .legend .sw.none { background: #cfd4c8; }
+
+  /* ---------------- media ---------------- */
+  figure { margin: 24px 0; }
+  figure img { width: 100%; height: auto; border-radius: 10px; display: block; }
+  figcaption { font-size: 13px; color: var(--muted); margin-top: 10px; line-height: 1.55; }
+
+  /* ---------------- code ---------------- */
+  pre {
+    background: #1b211e; color: #dfe4dc; border-radius: 10px;
+    padding: 17px 19px; overflow-x: auto;
+    font: 400 13px/1.65 var(--mono); margin: 16px 0;
+  }
+  pre .c { color: #8b968c; }
+
+  footer {
+    margin-top: 48px; padding-top: 20px; border-top: 1px solid var(--rule);
+    font-size: 13px; color: var(--faint); line-height: 1.6;
+  }
+
+  .hidden { display: none !important; }
+
+  @media (max-width: 1160px) {
+    .page { grid-template-columns: 232px minmax(0, 1fr); }
+    .toc { display: none; }
+  }
+  @media (max-width: 860px) {
+    .page { grid-template-columns: minmax(0, 1fr); gap: 0; padding: 26px 20px 90px; }
+    .nav { display: none; }
+    .topbar { padding: 0 16px; }
+    .searchbox, .btn span { display: none; }
+    h1 { font-size: 34px; }
+    .facts { grid-template-columns: 1fr; }
+    .fact:nth-child(odd) { padding-right: 0; }
+    .fact:nth-child(even) { padding-left: 0; border-left: 0; }
+    .row { grid-template-columns: 96px 1fr 38px; }
+  }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <span class="mark" aria-hidden="true"></span>
+  <span class="wordmark">TerraWatch <span class="sep">|</span> <span class="sub">ML</span></span>
+  <span class="spacer"></span>
+  <label class="searchbox">
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6">
+      <circle cx="7" cy="7" r="4.6"/><path d="M10.4 10.4 14 14"/>
+    </svg>
+    <input id="q" type="search" placeholder="Filter sections" aria-label="Filter sections">
+    <span class="kbd">/</span>
+  </label>
+  <button class="btn" type="button" onclick="window.print()">
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+      <path d="M4.5 6V2.5h7V6M4.5 12H3a1.5 1.5 0 0 1-1.5-1.5v-3A1.5 1.5 0 0 1 3 6h10a1.5 1.5 0 0 1 1.5 1.5v3A1.5 1.5 0 0 1 13 12h-1.5"/>
+      <rect x="4.5" y="9.5" width="7" height="4"/>
+    </svg>
+    <span>Print</span>
+  </button>
+</header>
+
+<div class="page">
+
+  <!-- ============ left nav ============ -->
+  <aside class="nav" id="nav">
+    <p class="group">Start</p>
+    <a href="#top" class="active">Overview</a>
+    <a href="#idea">The idea</a>
+
+    <p class="group">Data</p>
+    <a href="#rows">What a row is</a>
+    <a href="#nesting">Why the numbers differ</a>
+    <a href="#labels">Building the labels</a>
+
+    <p class="group">Model</p>
+    <a href="#features">Features</a>
+    <a href="#model">Choosing a model</a>
+    <a href="#results">Results</a>
+
+    <p class="group">Judgment</p>
+    <a href="#traps">Three traps</a>
+    <a href="#limits">Limits</a>
+    <a href="#next">What's next</a>
+    <a href="#run">Run it</a>
+
+    <p class="foot">
+      1,933 detections · Kenya<br>
+      Revision 1 · 15 Nov 2026
+    </p>
+  </aside>
+
+  <!-- ============ content ============ -->
+  <main id="top">
+
+    <p class="crumb">Home</p>
+    <h1>Make two satellites agree about fire.</h1>
+    <p class="lede">
+      MODIS and VIIRS both detect fires, but they disagree in ways that look like sensor
+      error and are actually geometry. This is how that disagreement becomes one calibrated
+      number — and the three ways the data tried to fool us along the way.
+    </p>
+
+    <div class="facts">
+      <div class="fact">
+        <div class="k">Dataset</div>
+        <div class="v">1,933 VIIRS detections · Kenya · 10–14 Feb 2023</div>
+      </div>
+      <div class="fact">
+        <div class="k">Label</div>
+        <div class="v">217 positives · 11.2% base rate</div>
+      </div>
+      <div class="fact">
+        <div class="k">Honest score</div>
+        <div class="v">PR-AUC 0.479 under spatial hold-out</div>
+      </div>
+      <div class="fact">
+        <div class="k">Stack</div>
+        <div class="v">Python · pandas · LightGBM · Parquet</div>
+      </div>
+    </div>
+
+    <!-- ================= 1 ================= -->
+    <section id="idea">
+      <h2>The idea</h2>
+      <p class="sub">Why this is a data problem before it is a machine-learning problem.</p>
+
+      <p>
+        A satellite passes over Kenya, sweeps a sensor across the ground, and an algorithm
+        looks for pixels much hotter than their neighbours. When it finds one, it writes a
+        row: latitude, longitude, time, temperature, an estimate of how much energy the fire
+        is radiating. That row is a <strong>detection</strong>.
+      </p>
+
+      <p>
+        Nearly everything that goes wrong in this project comes from one misunderstanding:
+        <em>a detection is not a fire</em>. One burning field produces hundreds of
+        detections across days, satellites and overpasses. Treat each row as a unique fire
+        and your counts are meaningless.
+      </p>
+
+      <p>
+        The second problem is that MODIS and VIIRS don't describe the same row the same way.
+        MODIS reports confidence as <code>72</code>. VIIRS reports <code>n</code>. One is a
+        percentage, the other a category. Neither is wrong; they are not the same
+        measurement, and the obvious move — mapping one scale onto the other — produces a
+        number that looks precise and means nothing.
+      </p>
+
+      <div class="panel note">
+        <div class="kicker">The constraint that shaped everything</div>
+        <p style="margin:0">
+          FIRMS gives you detections. It does <strong>not</strong> give you the pixels the
+          satellite looked at and found nothing. So there is no column that says "this was
+          really a fire" — the thing a supervised model would need. Any project claiming to
+          predict "is this a real fire" is quietly inventing its own labels.
+        </p>
+      </div>
+
+      <p>
+        So we changed the question to something the data can actually answer:
+      </p>
+
+      <div class="panel">
+        <p style="margin:0 0 10px;font-size:16.5px">
+          <strong>Given everything VIIRS observed inside a 1&nbsp;km MODIS footprint, did
+          MODIS report a fire in that footprint during that overpass?</strong>
+        </p>
+        <p style="margin:0;color:var(--muted);font-size:14.5px">
+          That answer is recorded in the data. It is not ground truth about fire — it is
+          ground truth about what MODIS recorded. That is enough to learn sensor behaviour,
+          and it is the only honest target available.
+        </p>
+      </div>
+
+      <p>That one model ends up replacing three separate things:</p>
+
+      <ul>
+        <li>
+          <strong>A shared confidence scale.</strong> A calibrated probability between 0 and
+          1 that means the same thing for both sensors. This is what replaces
+          <code>72%</code> and <code>n</code>.
+        </li>
+        <li>
+          <strong>A matching score.</strong> Two detections close in space and time with a
+          high joint probability are probably the same fire. The old distance rule becomes
+          one input among several.
+        </li>
+        <li>
+          <strong>An explanation for lone detections.</strong> "MODIS probably wouldn't have
+          caught this at 1 km" is a very different statement from "MODIS should have, and
+          didn't."
+        </li>
+      </ul>
+    </section>
+
+    <!-- ================= 2 ================= -->
+    <section id="rows">
+      <h2>What a row is</h2>
+      <p class="sub">The same fire, seen by two instruments, four minutes apart.</p>
+
+      <figure>
+        <img src="../assets/modis-vs-viirs.png" alt="Comparison of MODIS and VIIRS satellite characteristics, and the same fire seen by each at different resolutions.">
+        <figcaption>
+          VIIRS resolves the fire at 0.38 km and reports FRP 4.2 MW. MODIS averages the same
+          burn into a 1 km pixel and reports 18.4 MW. Neither is wrong — they integrate
+          different areas.
+        </figcaption>
+      </figure>
+
+      <p>
+        <strong>FRP</strong> stands for <em>fire radiative power</em>: how much energy the
+        fire is radiating, in megawatts. It is an integral over the pixel's area, which is
+        why the two sensors can report wildly different numbers for the same fire.
+      </p>
+
+      <div class="tw">
+        <table>
+          <thead>
+            <tr><th>Property</th><th>MODIS</th><th>VIIRS</th><th>What it breaks</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Pixel size</td><td>1 km</td><td>375 m</td><td>~7 VIIRS pixels fit inside one MODIS pixel</td></tr>
+            <tr><td>Confidence</td><td><code>0–100</code></td><td><code>l / n / h</code></td><td>not comparable; can't be averaged or thresholded alike</td></tr>
+            <tr><td>FRP</td><td>integral over ~1 km²</td><td>integral over ~0.14 km²</td><td>MODIS looks ~4× "hotter" per pixel</td></tr>
+            <tr><td>Swath</td><td>2,330 km</td><td>3,060 km</td><td>VIIRS sees places MODIS never looked</td></tr>
+            <tr><td>Overpass</td><td>Terra 10:30 · Aqua 13:30</td><td>13:30 · 01:30</td><td>Terra has no VIIRS partner within 30 min</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        <strong>Swath</strong> is the width of ground the satellite sweeps as it orbits. It
+        matters more than it looks: MODIS's is narrower, so VIIRS legitimately detects fires
+        in places MODIS simply never imaged. Keep that in mind — it comes back as a trap
+        later.
+      </p>
+    </section>
+
+    <!-- ================= 3 ================= -->
+    <section id="nesting">
+      <h2>Why the numbers differ</h2>
+      <p class="sub">Nesting, measured rather than assumed.</p>
+
+      <p>
+        If MODIS integrates over roughly seven VIIRS pixels, then comparing one MODIS
+        number against one VIIRS number is comparing a room's total light against a single
+        window's. The fair comparison is MODIS against the <em>sum</em> of the VIIRS pixels
+        inside that same footprint.
+      </p>
+
+      <p>We checked, on 86 matched pairs:</p>
+
+      <div class="tw">
+        <table>
+          <thead>
+            <tr><th>Ratio, sum(VIIRS inside footprint) / MODIS</th><th class="num">median</th><th class="num">mean</th><th class="num">25th pct</th><th class="num">75th pct</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>FRP agreement once areas are matched</td><td class="num hi">1.05</td><td class="num">1.27</td><td class="num">0.51</td><td class="num">1.70</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        A median of <strong>1.05</strong> means the two sensors agree almost exactly once you
+        compare the same physical quantity. That single number did two things: it justified
+        the harmonization approach, and it handed us a free baseline for FRP calibration.
+      </p>
+
+      <p>
+        The spread — 0.51 to 1.70 — is the part worth modelling. It is not noise; it is
+        geometry and conditions, which is exactly what the feature set is built to capture.
+      </p>
+    </section>
+
+    <!-- ================= 4 ================= -->
+    <section id="labels">
+      <h2>Building the labels</h2>
+      <p class="sub">One row per VIIRS detection, labelled by whether MODIS agreed.</p>
+
+      <p>
+        We anchor on VIIRS for a practical reason: it detects about 5.4× more than MODIS
+        over the same area. That means anchoring gives you both classes from real
+        observations. Anchoring on MODIS instead would leave you inventing "no fire here"
+        locations, which is exactly the dishonesty we were trying to avoid.
+      </p>
+
+      <ol class="steps">
+        <li>
+          <span class="n">01</span>
+          <div class="t">Take every VIIRS detection</div>
+          <div class="d">Each becomes one row. Its coordinates and acquisition time are the query.</div>
+        </li>
+        <li>
+          <span class="n">02</span>
+          <div class="t">Ask whether MODIS detected nearby</div>
+          <div class="d">Within 1.5 km and ±30 minutes. Yes → 1, no → 0.</div>
+          <div class="wait">1.5 km covers MODIS's 1 km pixel plus geolocation slack</div>
+        </li>
+        <li>
+          <span class="n">03</span>
+          <div class="t">Aggregate the neighbours</div>
+          <div class="d">Count, sum and maximum FRP of every VIIRS pixel sharing that footprint within ±5 minutes.</div>
+          <div class="wait">this is the nesting, turned into features</div>
+        </li>
+        <li>
+          <span class="n">04</span>
+          <div class="t">Result</div>
+          <div class="d">1,933 rows, 217 positive (11.2%), 57 spatial cells for cross-validation.</div>
+        </li>
+      </ol>
+
+      <div class="tw">
+        <table>
+          <thead><tr><th>Group</th><th>Columns</th><th>What it represents</th></tr></thead>
+          <tbody>
+            <tr><td>Own pixel</td><td><code>frp</code> · <code>bright_ti4</code> · <code>bright_ti5</code> · <code>scan</code> · <code>track</code> · <code>conf_ord</code></td><td>what this VIIRS pixel measured</td></tr>
+            <tr><td>Footprint</td><td><code>n_neigh</code> · <code>frp_sum</code> · <code>frp_max</code> · <code>ti4_mean</code></td><td>the total heat MODIS would have integrated</td></tr>
+            <tr><td>Label</td><td><code>modis_detected</code></td><td>did MODIS record a detection here</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ================= 5 ================= -->
+    <section id="features">
+      <h2>Features</h2>
+      <p class="sub">Three small decisions that matter more than the choice of model.</p>
+
+      <h3>Model the log of FRP, not FRP</h3>
+      <p>
+        FRP spans four orders of magnitude in a single fire season — a few tenths of a
+        megawatt up to hundreds. On a raw scale, one big fire dominates the loss and the
+        model spends its capacity fitting outliers. <code>log1p</code> compresses the tail
+        into something the model can learn across its whole range.
+      </p>
+
+      <h3>Constrain the direction of the physics</h3>
+      <p>
+        LightGBM accepts <em>monotonic constraints</em>: instructions that a feature may
+        only push the prediction one way. Declaring "more FRP never lowers the probability"
+        encodes what we already know about fire. On a sample this small, the model will
+        otherwise find relationships that fit the training fires and mean nothing.
+      </p>
+
+      <h3>Leave the geometry unconstrained</h3>
+      <p>
+        Scan angle and pixel size get no constraint, deliberately. They are not physics —
+        they are viewing conditions, and we wanted to see what the model did with them. That
+        choice is how we found the swath trap.
+      </p>
+    </section>
+
+    <!-- ================= 6 ================= -->
+    <section id="model">
+      <h2>Choosing a model</h2>
+      <p class="sub">No neural network, and no pretrained weights. Here's why.</p>
+
+      <p>
+        The obvious instinct is to reach for a pretrained Earth-observation model. But
+        NASA's Prithvi, SatMAE and similar models consume <em>imagery</em> — multispectral
+        raster patches. Our input is a table of detections, fifteen columns and no pixels.
+        Pretraining pays off when you lack labels but have a large architecture. We have
+        1,933 rows and thirteen features.
+      </p>
+
+      <div class="tw">
+        <table>
+          <thead><tr><th>Task</th><th>Baseline</th><th>Main model</th><th>Reason</th></tr></thead>
+          <tbody>
+            <tr><td>Cross-sensor detection</td><td>Logistic regression</td><td>LightGBM</td><td>tabular, nonlinear, handles interactions</td></tr>
+            <tr><td>FRP calibration <span class="dim">(planned)</span></td><td>OLS on log-log</td><td>LightGBM, robust loss</td><td>heavy-tailed target</td></tr>
+            <tr><td>Matching <span class="dim">(planned)</span></td><td>Distance + time rule</td><td>Logistic regression</td><td>explainability beats 1% AUC</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        A neural network would lose to gradient boosting on this data, train slower, and
+        cost you an afternoon of tuning. The honest answer is a well-constrained boosted
+        tree, compared against a model you can read.
+      </p>
+    </section>
+
+    <!-- ================= 7 ================= -->
+    <section id="results">
+      <h2>Results</h2>
+      <p class="sub">Same model, two evaluations — and the difference is the whole point.</p>
+
+      <p>
+        Before the numbers, one definition. <strong>PR-AUC</strong> is the area under the
+        precision-recall curve. We use it instead of accuracy because 88.8% of rows are
+        negative: a model that always says "no fire" scores 88.8% accuracy and is worthless.
+        The floor for PR-AUC here is the base rate, <strong>0.110</strong>.
+      </p>
+
+      <h3>The same model, scored two ways</h3>
+      <div class="tw">
+        <table>
+          <thead>
+            <tr><th>Split</th><th>Model</th><th class="num">PR-AUC</th><th class="num">ROC-AUC</th><th class="num">Brier</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>random (optimistic)</td><td>logistic</td><td class="num">0.578</td><td class="num">0.812</td><td class="num">0.071</td></tr>
+            <tr><td>random (optimistic)</td><td>LightGBM</td><td class="num lo">0.825</td><td class="num">0.952</td><td class="num">0.041</td></tr>
+            <tr><td>grouped CV (honest)</td><td>logistic</td><td class="num">0.419</td><td class="num">0.735</td><td class="num">0.085</td></tr>
+            <tr><td>grouped CV (honest)</td><td>LightGBM</td><td class="num hi">0.479</td><td class="num">0.793</td><td class="num">0.081</td></tr>
+            <tr><td>grouped CV (honest)</td><td>base rate</td><td class="num dim">0.110</td><td class="num dim">0.500</td><td class="num dim">0.101</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>What each column can do alone</h3>
+      <div class="tw">
+        <table>
+          <thead><tr><th>Feature</th><th class="num">ROC-AUC</th><th class="num">PR-AUC</th><th>Reading</th></tr></thead>
+          <tbody>
+            <tr><td><code>frp_sum</code></td><td class="num hi">0.786</td><td class="num">0.409</td><td>footprint beats the single pixel</td></tr>
+            <tr><td><code>frp_max</code></td><td class="num">0.780</td><td class="num hi">0.449</td><td>strongest single feature</td></tr>
+            <tr><td><code>n_neigh</code></td><td class="num">0.754</td><td class="num">0.353</td><td>fire size matters</td></tr>
+            <tr><td><code>frp</code> (own pixel)</td><td class="num">0.692</td><td class="num">0.240</td><td>worse than the sum</td></tr>
+            <tr><td><code>conf_ord</code></td><td class="num lo">0.510</td><td class="num">0.131</td><td><strong>a coin flip</strong></td></tr>
+            <tr><td><code>scan</code></td><td class="num lo">0.273</td><td class="num">0.079</td><td>inverted — a confounder, not a signal</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="panel note">
+        <div class="kicker">The line worth remembering</div>
+        <p style="margin:0">
+          VIIRS confidence predicts cross-sensor agreement at <strong>0.510 ROC-AUC</strong>
+          — indistinguishable from chance. When LightGBM was fitted on all features, it made
+          <strong>zero splits</strong> on confidence. It had the option and declined. That is
+          the strongest available argument that harmonized confidence has to be
+          <em>learned</em>, not rescaled from <code>l</code>/<code>n</code>/<code>h</code>.
+        </p>
+      </div>
+
+      <h3>Which features earn their place</h3>
+      <div class="tw">
+        <table>
+          <thead><tr><th>Feature set</th><th class="num">Logistic</th><th class="num">LightGBM</th><th>Note</th></tr></thead>
+          <tbody>
+            <tr><td>physics</td><td class="num">0.385</td><td class="num hi">0.486</td><td>no geometry at all</td></tr>
+            <tr><td>physics + night</td><td class="num">0.419</td><td class="num">0.472</td><td></td></tr>
+            <tr><td>physics + geometry + night</td><td class="num">0.419</td><td class="num">0.479</td><td><strong>the set we trust</strong></td></tr>
+            <tr><td>physics + geometry + time</td><td class="num">0.405</td><td class="num lo">0.561</td><td>inflated by a leak — see below</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>What LightGBM actually leaned on</h3>
+      <div class="bars">
+        <div class="row"><div class="l">scan</div><div class="track"><div class="fill geo" style="width:100%"></div></div><div class="v">558</div></div>
+        <div class="row"><div class="l">track</div><div class="track"><div class="fill geo" style="width:90%"></div></div><div class="v">505</div></div>
+        <div class="row"><div class="l">log_frp_max</div><div class="track"><div class="fill" style="width:27%"></div></div><div class="v">152</div></div>
+        <div class="row"><div class="l">n_neigh</div><div class="track"><div class="fill" style="width:26%"></div></div><div class="v">144</div></div>
+        <div class="row"><div class="l">bright_ti5</div><div class="track"><div class="fill" style="width:26%"></div></div><div class="v">143</div></div>
+        <div class="row"><div class="l">ti4_mean</div><div class="track"><div class="fill" style="width:18%"></div></div><div class="v">100</div></div>
+        <div class="row"><div class="l">log_frp_sum</div><div class="track"><div class="fill" style="width:17%"></div></div><div class="v">93</div></div>
+        <div class="row"><div class="l">is_night</div><div class="track"><div class="fill" style="width:10%"></div></div><div class="v">56</div></div>
+        <div class="row"><div class="l">bright_ti4</div><div class="track"><div class="fill" style="width:3%"></div></div><div class="v">19</div></div>
+        <div class="row"><div class="l">conf_ord</div><div class="track"><div class="fill none" style="width:0.5%"></div></div><div class="v">0</div></div>
+      </div>
+      <div class="legend">
+        <span><i class="sw physics"></i> fire physics</span>
+        <span><i class="sw geo"></i> viewing geometry</span>
+        <span><i class="sw none"></i> never chosen</span>
+      </div>
+      <p style="font-size:13px;color:var(--faint);margin-top:12px">
+        The two most-used features are geometry, not physics: the model's favourite trick was
+        "VIIRS was near its swath edge, so MODIS wasn't looking." That is the second trap.
+      </p>
+    </section>
+
+    <!-- ================= 8 ================= -->
+    <section id="traps">
+      <h2>Three traps</h2>
+      <p class="sub">Each was found in the data rather than predicted, and each would have inflated the result without anyone noticing.</p>
+
+      <h3>1. A random split flatters you by 72%</h3>
+      <p>
+        One fire produces hundreds of near-identical rows in adjacent pixels. Split randomly
+        and the model sees one pixel in training and its neighbour in testing. It isn't
+        learning sensor behaviour; it is recognising a fire it has already met.
+      </p>
+      <p>
+        Holding out whole 1° cells instead, LightGBM drops from <strong>0.825 to 0.479</strong>
+        — a gap of <strong>+0.346 PR-AUC</strong>. Notice that logistic regression degrades
+        less (<code>+0.159</code>). Simpler models have less capacity to memorise, which is
+        why they flatter themselves less.
+      </p>
+
+      <h3>2. "MODIS saw nothing" often means "MODIS wasn't there"</h3>
+      <p>
+        MODIS's swath is 2,330 km; VIIRS's is 3,060 km. Near VIIRS's swath edge, MODIS was
+        not looking. So a label of 0 can mean <em>absent from the observation</em> rather
+        than <em>absent from the world</em> — and the model happily learns the difference
+        between those as if it were fire behaviour.
+      </p>
+
+      <div class="tw">
+        <table>
+          <thead><tr><th>VIIRS scan bin</th><th class="num">pixel size</th><th class="num">positive rate</th></tr></thead>
+          <tbody>
+            <tr><td>near-nadir</td><td class="num">0.38 km</td><td class="num hi">23.9%</td></tr>
+            <tr><td>low</td><td class="num">0.43 km</td><td class="num">12.9%</td></tr>
+            <tr><td>high</td><td class="num">0.49 km</td><td class="num lo">2.2%</td></tr>
+            <tr><td>swath edge</td><td class="num">0.61 km</td><td class="num lo">4.6%</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        A 10× collapse. And when we restricted to narrow scan angles, the predictive power of
+        <code>scan</code> fell back toward 0.5 — confirming it was measuring coverage, not
+        fire. <code>--max-scan</code> is a first-order mitigation; the real fix needs
+        per-granule swath geometry.
+      </p>
+
+      <h3>3. Day-of-year is a date in disguise</h3>
+      <p>
+        With five days of data, <code>doy</code> is effectively an identifier for the
+        acquisition date. Our grouped cross-validation holds out space but not time, so the
+        same days appear in both halves and day-specific conditions leak across cells.
+      </p>
+      <p>
+        The tell is an asymmetry: adding <code>doy</code> lifts LightGBM from 0.479 to 0.561
+        and does nothing at all for logistic regression. A feature that only helps the
+        high-capacity model is a leak, not signal. It is out of the trusted feature set until
+        we have enough seasons for a temporal hold-out.
+      </p>
+    </section>
+
+    <!-- ================= 9 ================= -->
+    <section id="limits">
+      <h2>Limits</h2>
+      <p class="sub">Stated plainly, because being caught out is worse than being early.</p>
+
+      <div class="tw">
+        <table>
+          <thead><tr><th>Limitation</th><th>What it means in practice</th></tr></thead>
+          <tbody>
+            <tr><td>Absence is ambiguous</td><td>No MODIS detection may mean cloud, swath gap, or a fire too small for 1 km — not "no fire."</td></tr>
+            <tr><td>Five days, one region</td><td>Exploratory, not a training set. 217 positives is thin enough that fold-to-fold variance is real.</td></tr>
+            <tr><td>No temporal hold-out yet</td><td>Blocked on backfilling seasons; until then date-style leakage is mitigated, not eliminated.</td></tr>
+            <tr><td>Uncalibrated probabilities</td><td>LightGBM outputs scores, not probabilities. Calibration is required before this can serve as a confidence scale.</td></tr>
+            <tr><td>Internal consistency only</td><td>Improved agreement between two sensors does <strong>not</strong> prove better real-world fire detection. No independent ground truth was used.</td></tr>
+            <tr><td>East Africa only</td><td>Thresholds may not transfer to other biomes without re-fitting.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        That fifth row is the one to keep in front of you. Every number on this page
+        describes <em>agreement between two sensors</em>, not accuracy against reality. They
+        are different claims, and conflating them is the most common way a project like this
+        misleads its audience.
+      </p>
+    </section>
+
+    <!-- ================= 10 ================= -->
+    <section id="next">
+      <h2>What's next</h2>
+      <p class="sub">Ordered by how much each step improves trust in the result.</p>
+
+      <ol class="steps">
+        <li>
+          <span class="n">01</span>
+          <div class="t">Backfill two to three fire seasons</div>
+          <div class="d">Unlocks a real temporal hold-out and gives the boosted model enough rows to justify itself. Roughly 220 API calls per source, now parallel.</div>
+          <div class="wait">biggest single gain in trust</div>
+        </li>
+        <li>
+          <span class="n">02</span>
+          <div class="t">Calibrate the probabilities</div>
+          <div class="d">Isotonic regression on a held-out fold, then a reliability diagram. The probability <em>is</em> the deliverable.</div>
+        </li>
+        <li>
+          <span class="n">03</span>
+          <div class="t">Control coverage properly</div>
+          <div class="d">Restrict anchors to regions MODIS actually imaged, instead of the blunt scan filter.</div>
+        </li>
+        <li>
+          <span class="n">04</span>
+          <div class="t">Harmonize FRP</div>
+          <div class="d">Regress MODIS FRP on summed VIIRS FRP plus geometry. The 1.05 median is already a strong baseline.</div>
+        </li>
+        <li>
+          <span class="n">05</span>
+          <div class="t">Ship a versioned artifact</div>
+          <div class="d">A <code>joblib</code> bundle with feature list, thresholds and a documented input/output contract the backend can call.</div>
+        </li>
+      </ol>
+    </section>
+
+    <!-- ================= 11 ================= -->
+    <section id="run">
+      <h2>Run it</h2>
+      <p class="sub">Everything on this page comes from these commands.</p>
+
+<pre><span class="c"># setup (Python 3.14)</span>
+cd ML
+python3 -m pip install -r requirements.txt
+cp .env.example .env          <span class="c"># paste your FIRMS MAP_KEY</span>
+
+<span class="c"># fetch -> label -> train</span>
+python3 -m terrawatch all --start 2023-02-10 --end 2023-02-15
+
+<span class="c"># or one stage at a time</span>
+python3 -m terrawatch fetch  --start 2023-02-10 --end 2023-02-15
+python3 -m terrawatch labels --start 2023-02-10 --end 2023-02-15
+python3 -m terrawatch train  --start 2023-02-10 --end 2023-02-15
+
+<span class="c"># verify</span>
+python3 -m pytest              <span class="c"># 21 passed</span></pre>
+
+      <p style="font-size:14px;color:var(--faint)">
+        <code>--end</code> is exclusive, matching Python slicing. Module responsibilities are
+        documented in <code>README.md</code>.
+      </p>
+
+      <footer>
+        TerraWatch · ML component · generated from the pipeline runs described above.
+        Fire data © NASA FIRMS. All scores are internal-consistency assessments, not
+        ground-truth accuracy.
+      </footer>
+    </section>
+
+  </main>
+
+  <!-- ============ right TOC ============ -->
+  <aside class="toc" id="toc">
+    <p class="label">On this page</p>
+    <a href="#idea" class="active">The idea</a>
+    <a href="#rows">What a row is</a>
+    <a href="#nesting">Why the numbers differ</a>
+    <a href="#labels">Building the labels</a>
+    <a href="#features">Features</a>
+    <a href="#model">Choosing a model</a>
+    <a href="#results">Results</a>
+    <a href="#traps">Three traps</a>
+    <a href="#limits">Limits</a>
+    <a href="#next">What's next</a>
+    <a href="#run">Run it</a>
+  </aside>
+
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var sections = Array.prototype.slice.call(document.querySelectorAll("main section"));
+  var navLinks = Array.prototype.slice.call(document.querySelectorAll("#nav a"));
+  var tocLinks = Array.prototype.slice.call(document.querySelectorAll("#toc a"));
+
+  function setActive(id) {
+    navLinks.concat(tocLinks).forEach(function (a) {
+      a.classList.toggle("active", a.getAttribute("href") === "#" + id);
+    });
+  }
+
+  // scroll spy
+  if ("IntersectionObserver" in window && sections.length) {
+    var visible = {};
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) { visible[e.target.id] = e.isIntersecting; });
+      for (var i = 0; i < sections.length; i++) {
+        if (visible[sections[i].id]) { setActive(sections[i].id); return; }
+      }
+    }, { rootMargin: "-80px 0px -65% 0px", threshold: 0 });
+    sections.forEach(function (s) { io.observe(s); });
+  }
+
+  // "/" focuses search
+  var q = document.getElementById("q");
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "/" && document.activeElement !== q) {
+      e.preventDefault();
+      q.focus();
+    }
+    if (e.key === "Escape") { q.value = ""; filter(""); q.blur(); }
+  });
+
+  function filter(term) {
+    term = term.trim().toLowerCase();
+    var groups = document.querySelectorAll("#nav .group");
+    var any = false;
+    navLinks.forEach(function (a) {
+      var text = a.textContent.toLowerCase();
+      var match = !term || text.indexOf(term) !== -1;
+      a.classList.toggle("hidden", !match);
+      if (match) any = true;
+    });
+    // hide group headings that have no visible link after them
+    groups.forEach(function (g) {
+      var el = g.nextElementSibling;
+      var has = false;
+      while (el && el.tagName === "A") {
+        if (!el.classList.contains("hidden")) has = true;
+        el = el.nextElementSibling;
+      }
+      g.classList.toggle("hidden", !has);
+    });
+    if (term && !any) {
+      // no match: restore so the page is never unnavigable
+      navLinks.forEach(function (a) { a.classList.remove("hidden"); });
+      groups.forEach(function (g) { g.classList.remove("hidden"); });
+    }
+  }
+
+  q.addEventListener("input", function () { filter(q.value); });
+})();
+</script>
+</body>
+</html>
