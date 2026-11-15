@@ -60,6 +60,7 @@
   .wordmark .sub { font: 400 15px/1 var(--sans); color: var(--muted); }
   .topbar .spacer { flex: 1; }
 
+  .searchwrap { position: relative; }
   .searchbox {
     display: flex; align-items: center; gap: 8px;
     height: 34px; padding: 0 10px; width: 190px;
@@ -71,10 +72,36 @@
     font: 400 13.5px/1 var(--sans); color: var(--ink);
   }
   .searchbox input::placeholder { color: var(--faint); }
+  .searchbox:focus-within { border-color: var(--accent); }
   .kbd {
     font: 500 11px/1 var(--mono); color: var(--muted);
     border: 1px solid var(--rule); border-radius: 4px; padding: 3px 5px; flex: none;
   }
+
+  .results {
+    position: absolute; top: 42px; right: 0; z-index: 60;
+    width: min(390px, calc(100vw - 32px));
+    background: var(--surface); border: 1px solid var(--rule);
+    border-radius: 10px; padding: 6px;
+    box-shadow: 0 14px 34px rgba(21, 26, 24, .13);
+    max-height: 62vh; overflow-y: auto;
+  }
+  .results[hidden] { display: none; }
+  .results a {
+    display: block; padding: 9px 10px; border-radius: 6px;
+    text-decoration: none; color: var(--ink);
+  }
+  .results a.sel, .results a:hover { background: var(--surface-2); text-decoration: none; }
+  .results .rt { font: 600 13.5px/1.35 var(--sans); }
+  .results .rs {
+    font: 400 12.5px/1.5 var(--sans); color: var(--muted); margin-top: 3px;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .results .empty, .results .hint {
+    padding: 11px 12px; font: 400 13px/1.5 var(--sans); color: var(--muted);
+  }
+  .results mark { background: #f0ded8; color: var(--accent-dark); border-radius: 2px; padding: 0 1px; }
   .btn {
     display: inline-flex; align-items: center; gap: 7px;
     height: 34px; padding: 0 12px; cursor: pointer;
@@ -290,8 +317,17 @@
   @media (max-width: 860px) {
     .page { grid-template-columns: minmax(0, 1fr); gap: 0; padding: 26px 20px 90px; }
     .nav { display: none; }
-    .topbar { padding: 0 16px; }
-    .searchbox, .btn span { display: none; }
+    .topbar { padding: 0 16px; gap: 12px; }
+    .topbar .spacer { display: none; }
+    .wordmark .sep, .wordmark .sub { display: none; }
+    .searchwrap { flex: 1; min-width: 0; }
+    .searchbox { width: 100%; }
+    .searchbox .kbd { display: none; }
+    .results {
+      position: fixed; top: 60px; left: 12px; right: 12px;
+      width: auto; max-height: 68vh;
+    }
+    .btn span { display: none; }
     h1 { font-size: 34px; }
     .facts { grid-template-columns: 1fr; }
     .fact:nth-child(odd) { padding-right: 0; }
@@ -306,13 +342,17 @@
   <span class="mark" aria-hidden="true"></span>
   <span class="wordmark">TerraWatch <span class="sep">|</span> <span class="sub">ML</span></span>
   <span class="spacer"></span>
-  <label class="searchbox">
-    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6">
-      <circle cx="7" cy="7" r="4.6"/><path d="M10.4 10.4 14 14"/>
-    </svg>
-    <input id="q" type="search" placeholder="Filter sections" aria-label="Filter sections">
-    <span class="kbd">/</span>
-  </label>
+  <div class="searchwrap">
+    <label class="searchbox">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6">
+        <circle cx="7" cy="7" r="4.6"/><path d="M10.4 10.4 14 14"/>
+      </svg>
+      <input id="q" type="search" placeholder="Search this guide" aria-label="Search this guide"
+             autocomplete="off" role="combobox" aria-expanded="false" aria-controls="results">
+      <span class="kbd">/</span>
+    </label>
+    <div class="results" id="results" hidden></div>
+  </div>
   <button class="btn" type="button" onclick="window.print()">
     <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
       <path d="M4.5 6V2.5h7V6M4.5 12H3a1.5 1.5 0 0 1-1.5-1.5v-3A1.5 1.5 0 0 1 3 6h10a1.5 1.5 0 0 1 1.5 1.5v3A1.5 1.5 0 0 1 13 12h-1.5"/>
@@ -917,14 +957,17 @@ python3 -m pytest              <span class="c"># 21 passed</span></pre>
   var sections = Array.prototype.slice.call(document.querySelectorAll("main section"));
   var navLinks = Array.prototype.slice.call(document.querySelectorAll("#nav a"));
   var tocLinks = Array.prototype.slice.call(document.querySelectorAll("#toc a"));
+  var q = document.getElementById("q");
+  var box = document.getElementById("results");
+  var wrap = document.querySelector(".searchwrap");
 
+  /* ---------------- scroll spy ---------------- */
   function setActive(id) {
     navLinks.concat(tocLinks).forEach(function (a) {
       a.classList.toggle("active", a.getAttribute("href") === "#" + id);
     });
   }
 
-  // scroll spy
   if ("IntersectionObserver" in window && sections.length) {
     var visible = {};
     var io = new IntersectionObserver(function (entries) {
@@ -936,28 +979,73 @@ python3 -m pytest              <span class="c"># 21 passed</span></pre>
     sections.forEach(function (s) { io.observe(s); });
   }
 
-  // "/" focuses search
-  var q = document.getElementById("q");
-  document.addEventListener("keydown", function (e) {
-    if (e.key === "/" && document.activeElement !== q) {
-      e.preventDefault();
-      q.focus();
-    }
-    if (e.key === "Escape") { q.value = ""; filter(""); q.blur(); }
+  /* ---------------- index ---------------- */
+  function squash(s) { return s.replace(/\s+/g, " ").trim(); }
+
+  var index = sections.map(function (s) {
+    var h2 = s.querySelector("h2");
+    var title = h2 ? squash(h2.textContent) : s.id;
+
+    // textContent glues table cells and list items together; pad block
+    // elements so snippets read as words, not "ruleLogistic".
+    var clone = s.cloneNode(true);
+    Array.prototype.forEach.call(
+      clone.querySelectorAll("td, th, li, p, h3, figcaption"),
+      function (el) { el.appendChild(document.createTextNode("  ")); }
+    );
+
+    var body = squash(clone.textContent);
+    if (body.indexOf(title) === 0) body = body.slice(title.length).trim();
+    return { id: s.id, title: title, body: body };
   });
 
-  function filter(term) {
-    term = term.trim().toLowerCase();
-    var groups = document.querySelectorAll("#nav .group");
-    var any = false;
-    navLinks.forEach(function (a) {
-      var text = a.textContent.toLowerCase();
-      var match = !term || text.indexOf(term) !== -1;
-      a.classList.toggle("hidden", !match);
-      if (match) any = true;
+  /* ---------------- text helpers ---------------- */
+  function esc(s) {
+    return s.replace(/[&<>"]/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
     });
-    // hide group headings that have no visible link after them
-    groups.forEach(function (g) {
+  }
+
+  function hl(text, term) {
+    var safe = esc(text);
+    if (!term) return safe;
+    var re = new RegExp("(" + term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + ")", "ig");
+    return safe.replace(re, "<mark>$1</mark>");
+  }
+
+  function snippet(body, term) {
+    var at = body.toLowerCase().indexOf(term);
+    if (at < 0) return body.slice(0, 108) + (body.length > 108 ? "…" : "");
+    var start = Math.max(0, at - 54);
+    var end = Math.min(body.length, at + term.length + 94);
+    return (start > 0 ? "… " : "") + body.slice(start, end) + (end < body.length ? " …" : "");
+  }
+
+  /* ---------------- state ---------------- */
+  var matches = [];
+  var sel = -1;
+
+  function showAllNav() {
+    navLinks.forEach(function (a) { a.classList.remove("hidden"); });
+    Array.prototype.forEach.call(document.querySelectorAll("#nav .group"), function (g) {
+      g.classList.remove("hidden");
+    });
+  }
+
+  function close() {
+    box.hidden = true;
+    box.innerHTML = "";
+    q.setAttribute("aria-expanded", "false");
+    sel = -1;
+    showAllNav();
+  }
+
+  function filterNav(ids) {
+    navLinks.forEach(function (a) {
+      var hit = ids.indexOf(a.getAttribute("href").slice(1)) !== -1;
+      a.classList.toggle("hidden", !hit);
+    });
+    Array.prototype.forEach.call(document.querySelectorAll("#nav .group"), function (g) {
       var el = g.nextElementSibling;
       var has = false;
       while (el && el.tagName === "A") {
@@ -966,14 +1054,120 @@ python3 -m pytest              <span class="c"># 21 passed</span></pre>
       }
       g.classList.toggle("hidden", !has);
     });
-    if (term && !any) {
-      // no match: restore so the page is never unnavigable
-      navLinks.forEach(function (a) { a.classList.remove("hidden"); });
-      groups.forEach(function (g) { g.classList.remove("hidden"); });
-    }
   }
 
-  q.addEventListener("input", function () { filter(q.value); });
+  function setSel(i) {
+    sel = i;
+    Array.prototype.forEach.call(box.querySelectorAll("a"), function (a, j) {
+      a.classList.toggle("sel", j === i);
+    });
+  }
+
+  function render(raw) {
+    var term = raw.trim().toLowerCase();
+    box.innerHTML = "";
+
+    if (!term) { close(); return; }
+
+    function occurrences(text) {
+      var re = new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi");
+      var found = text.match(re);
+      return found ? found.length : 0;
+    }
+
+    matches = index
+      .map(function (s) {
+        var inTitle = s.title.toLowerCase().indexOf(term) !== -1;
+        var hits = occurrences(s.body);
+        if (!inTitle && !hits) return null;
+        return { s: s, rank: inTitle ? 0 : 1, hits: hits };
+      })
+      .filter(Boolean)
+      .sort(function (a, b) { return (a.rank - b.rank) || (b.hits - a.hits); })
+      .slice(0, 8)
+      .map(function (m) { return m.s; });
+
+    if (!matches.length) {
+      box.innerHTML = '<p class="empty">No matches for \u201c' + esc(raw.trim()) + '\u201d.</p>';
+      box.hidden = false;
+      q.setAttribute("aria-expanded", "true");
+      showAllNav();
+      sel = -1;
+      return;
+    }
+
+    filterNav(matches.map(function (m) { return m.id; }));
+
+    matches.forEach(function (m, i) {
+      var a = document.createElement("a");
+      a.href = "#" + m.id;
+      a.setAttribute("role", "option");
+      a.innerHTML =
+        '<div class="rt">' + hl(m.title, term) + "</div>" +
+        '<div class="rs">' + hl(snippet(m.body, term), term) + "</div>";
+      a.addEventListener("click", function () {
+        q.value = "";
+        close();
+        setActive(m.id);
+      });
+      a.addEventListener("mouseenter", function () { setSel(i); });
+      box.appendChild(a);
+    });
+
+    box.hidden = false;
+    q.setAttribute("aria-expanded", "true");
+    setSel(0);
+  }
+
+  function go(i) {
+    if (i < 0 || i >= matches.length) return;
+    var id = matches[i].id;
+    window.location.hash = "#" + id;
+    q.value = "";
+    close();
+    q.blur();
+    setActive(id);
+  }
+
+  /* ---------------- events ---------------- */
+  q.addEventListener("input", function () { render(q.value); });
+
+  q.addEventListener("keydown", function (e) {
+    if (box.hidden) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setSel(Math.min(sel + 1, matches.length - 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setSel(Math.max(sel - 1, 0));
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      go(sel < 0 ? 0 : sel);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      q.value = "";
+      close();
+      q.blur();
+    }
+  });
+
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "/" && document.activeElement !== q) {
+      e.preventDefault();
+      q.focus();
+      q.select();
+    }
+  });
+
+  document.addEventListener("click", function (e) {
+    if (!wrap.contains(e.target)) close();
+  });
+
+  q.addEventListener("blur", function () {
+    setTimeout(function () {
+      if (document.activeElement !== q) close();
+    }, 120);
+  });
 })();
 </script>
 </body>
